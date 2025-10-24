@@ -1,0 +1,40 @@
+# Clippy Configuration for macOS Host (Server Mode)
+# Location: ~/.config/clippy/config.toml on macOS
+
+[server]
+# Bind to all interfaces so the VM can connect
+host = "0.0.0.0"
+port = 9876
+
+# Optional: Add authentication token for security
+# Uncomment and set a shared secret between server and client
+# auth_token = "your-secret-token-here"
+
+[client]
+# Not used in server-only mode, but required for config
+# These settings are ignored when running with --server flag
+server_host = "127.0.0.1"
+server_port = 9876
+auto_connect = true
+
+[storage]
+# Keep last 1000 clipboard entries
+max_history = 1000
+
+# Maximum size for clipboard content (in MB)
+# Prevents memory issues with very large images/files
+max_content_size_mb = 10
+
+# Database path (auto-detected if not specified)
+# Default: ~/.local/share/clippy/clipboard.db
+# database_path = "/Users/yourname/.local/share/clippy/clipboard.db"
+
+[sync]
+# Check clipboard for changes every 500ms
+interval_ms = 500
+
+# Wait 5 seconds before reconnecting after connection loss
+retry_delay_ms = 5000
+
+# Send heartbeat every 30 seconds to keep connection alive
+heartbeat_interval_ms = 30000

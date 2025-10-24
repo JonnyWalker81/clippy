@@ -1,0 +1,30 @@
+# Clippy Configuration for Both Server and Client Mode
+# Location: ~/.config/clippy/config.toml
+# Use this if you want bidirectional sync with another machine
+
+[server]
+# Server listens for incoming connections
+host = "0.0.0.0"
+port = 9876
+
+# Optional: Add authentication token
+# auth_token = "your-secret-token-here"
+
+[client]
+# Connect to another clippy instance
+# For standalone mode, use 127.0.0.1 to connect to self
+server_host = "127.0.0.1"
+server_port = 9876
+auto_connect = true
+
+# Optional: Authentication token (must match server)
+# auth_token = "your-secret-token-here"
+
+[storage]
+max_history = 1000
+max_content_size_mb = 10
+
+[sync]
+interval_ms = 500
+retry_delay_ms = 5000
+heartbeat_interval_ms = 30000

@@ -1,0 +1,43 @@
+# Clippy Configuration for NixOS VM (Client Mode)
+# Location: ~/.config/clippy/config.toml on NixOS
+
+[server]
+# Not used in client-only mode, but required for config
+# These settings are ignored when running with --client flag
+host = "0.0.0.0"
+port = 9876
+
+[client]
+# IMPORTANT: Change this to your macOS host IP address
+# Common Parallels IPs: 10.211.55.2 or 10.37.129.2
+# Find it with: ip route | grep default
+server_host = "10.211.55.2"
+server_port = 9876
+
+# Automatically connect on startup
+auto_connect = true
+
+# Optional: Add authentication token (must match server)
+# Uncomment if you set auth_token on the server
+# auth_token = "your-secret-token-here"
+
+[storage]
+# Keep last 1000 clipboard entries
+max_history = 1000
+
+# Maximum size for clipboard content (in MB)
+max_content_size_mb = 10
+
+# Database path (auto-detected if not specified)
+# Default: ~/.local/share/clippy/clipboard.db
+# database_path = "/home/yourname/.local/share/clippy/clipboard.db"
+
+[sync]
+# Check clipboard for changes every 500ms
+interval_ms = 500
+
+# Wait 5 seconds before reconnecting after connection loss
+retry_delay_ms = 5000
+
+# Send heartbeat every 30 seconds to keep connection alive
+heartbeat_interval_ms = 30000

@@ -171,6 +171,8 @@ impl ClipboardDaemon {
         let mut last_checksum: Option<String> = None;
         let interval = Duration::from_millis(config.sync.interval_ms);
 
+        info!("Starting clipboard monitor (checking every {}ms)", config.sync.interval_ms);
+
         loop {
             sleep(interval).await;
 
@@ -180,24 +182,56 @@ impl ClipboardDaemon {
                         last_checksum = Some(checksum.clone());
 
                         if let Ok(Some(content)) = clipboard.get_content() {
-                            info!("Detected clipboard change, sending to server");
+                            info!(
+                                "🔍 Detected LOCAL clipboard change (type: {}, checksum: {})",
+                                content.content_type_str(),
+                                &checksum[..8]
+                            );
+
+                            let content_preview = match &content {
+                                ClipboardContent::Text(text) => {
+                                    if text.len() > 50 {
+                                        format!("{}...", &text[..50])
+                                    } else {
+                                        text.clone()
+                                    }
+                                }
+                                ClipboardContent::Image(data) => {
+                                    format!("[Image: {} bytes]", data.len())
+                                }
+                                ClipboardContent::Html(html) => {
+                                    if html.len() > 50 {
+                                        format!("{}...", &html[..50])
+                                    } else {
+                                        html.clone()
+                                    }
+                                }
+                            };
+
+                            info!("📋 Content preview: {}", content_preview);
 
                             let message = Message::ClipboardUpdate {
                                 content_type: content.content_type_str().to_string(),
                                 content: content.to_base64(),
                                 timestamp: chrono::Utc::now(),
                                 source: Config::get_source_name(),
-                                checksum,
+                                checksum: checksum.clone(),
                             };
 
+                            info!("📤 Sending clipboard update to server...");
                             if let Err(e) = client_tx.send(message).await {
-                                error!("Failed to send clipboard update: {}", e);
+                                error!("❌ Failed to send clipboard update: {}", e);
+                            } else {
+                                info!("✓ Clipboard update sent to server");
                             }
                         }
                     }
                 }
                 Ok(None) => {
-                    last_checksum = None;
+                    if last_checksum.is_some() {
+                        info!("Clipboard is now empty");
+                        last_checksum = None;
+                    }
                 }
                 Err(e) => {
                     error!("Error checking clipboard: {}", e);

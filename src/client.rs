@@ -92,8 +92,19 @@ impl ClipboardClient {
             tokio::select! {
                 // Send messages from the queue
                 Some(message) = self.rx.recv() => {
+                    // Log what we're sending
+                    match &message {
+                        Message::ClipboardUpdate { content_type, checksum, source, .. } => {
+                            info!(
+                                "📤 Sending clipboard update to server (type: {}, source: {}, checksum: {})",
+                                content_type, source, &checksum[..8]
+                            );
+                        }
+                        _ => {}
+                    }
+
                     if let Err(e) = socket.write_all(&message.to_bytes()?).await {
-                        error!("Error sending message: {}", e);
+                        error!("❌ Error sending message: {}", e);
                         return Err(e.into());
                     }
                 }
@@ -151,13 +162,16 @@ impl ClipboardClient {
                 checksum,
             } => {
                 info!(
-                    "Received clipboard update from {} (type: {}, checksum: {})",
-                    source, content_type, checksum
+                    "📥 Received clipboard update from {} (type: {}, checksum: {}, size: {} bytes)",
+                    source, content_type, &checksum[..8], content.len()
                 );
 
                 // Update local clipboard
+                info!("📋 Applying clipboard update to local clipboard...");
                 if let Err(e) = self.apply_clipboard_update(&content_type, &content).await {
-                    error!("Error applying clipboard update: {}", e);
+                    error!("❌ Error applying clipboard update: {}", e);
+                } else {
+                    info!("✓ Successfully applied clipboard update");
                 }
             }
 
@@ -167,9 +181,9 @@ impl ClipboardClient {
 
             Message::ClipboardAck { checksum, success } => {
                 if success {
-                    info!("Clipboard sync acknowledged: {}", checksum);
+                    info!("✓ Server acknowledged clipboard sync: {}", &checksum[..8]);
                 } else {
-                    warn!("Clipboard sync failed: {}", checksum);
+                    warn!("❌ Server failed to sync clipboard: {}", &checksum[..8]);
                 }
             }
 

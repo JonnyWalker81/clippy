@@ -207,6 +207,14 @@ impl ClipboardServer {
                     return Ok(true);
                 }
 
+                info!(
+                    "Received clipboard update from {} (type: {}, size: {} bytes, checksum: {})",
+                    source,
+                    content_type,
+                    content.len(),
+                    checksum
+                );
+
                 let content_type_enum = crate::storage::models::ClipboardContentType::from_str(
                     &content_type,
                 )
@@ -217,13 +225,22 @@ impl ClipboardServer {
                     content_type: content_type_enum,
                     content: content.clone(),
                     metadata: None,
-                    source,
+                    source: source.clone(),
                     timestamp,
                     checksum: checksum.clone(),
                 };
 
                 match storage.insert(&entry).await {
                     Ok(_) => {
+                        info!("Stored clipboard entry in database");
+
+                        // Apply to local clipboard
+                        if let Err(e) = Self::apply_clipboard_update(&content_type, &content) {
+                            error!("Failed to apply clipboard update locally: {}", e);
+                        } else {
+                            info!("✓ Applied clipboard update to local clipboard");
+                        }
+
                         let response = Message::ClipboardAck {
                             checksum,
                             success: true,
@@ -279,5 +296,15 @@ impl ClipboardServer {
         }
 
         Ok(true)
+    }
+
+    fn apply_clipboard_update(content_type: &str, content: &str) -> Result<()> {
+        use crate::clipboard::{ClipboardContent, ClipboardManager};
+
+        let mut clipboard = ClipboardManager::new()?;
+        let clipboard_content = ClipboardContent::from_base64(content_type, content)?;
+        clipboard.set_content(&clipboard_content)?;
+
+        Ok(())
     }
 }
