@@ -31,6 +31,9 @@
           xorg.libXrandr
           wayland
           libxkbcommon
+          # Clipboard utilities for runtime
+          xclip  # X11 clipboard tool
+          wl-clipboard  # Wayland clipboard tool
         ];
       in
       {

@@ -8,7 +8,7 @@ use anyhow::Result;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio::time::{sleep, Duration};
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 pub enum DaemonMode {
     Server,
@@ -160,10 +160,18 @@ impl ClipboardDaemon {
     }
 
     async fn monitor_clipboard_changes(config: Config, client_tx: mpsc::Sender<Message>) {
+        info!("🚀 Initializing clipboard manager...");
         let mut clipboard = match ClipboardManager::new() {
-            Ok(c) => c,
+            Ok(c) => {
+                info!("✓ Clipboard manager initialized successfully");
+                c
+            },
             Err(e) => {
-                error!("Failed to initialize clipboard manager: {}", e);
+                error!("❌ Failed to initialize clipboard manager: {}", e);
+                error!("This usually means:");
+                error!("  - X11: xclip or xsel not installed");
+                error!("  - Wayland: wl-clipboard not installed");
+                error!("  - No DISPLAY environment variable set");
                 return;
             }
         };
@@ -171,70 +179,99 @@ impl ClipboardDaemon {
         let mut last_checksum: Option<String> = None;
         let interval = Duration::from_millis(config.sync.interval_ms);
 
-        info!("Starting clipboard monitor (checking every {}ms)", config.sync.interval_ms);
+        info!("✓ Starting clipboard monitor (checking every {}ms)", config.sync.interval_ms);
+        info!("🔄 Monitor loop started - waiting for clipboard changes...");
 
+        let mut iteration = 0;
         loop {
             sleep(interval).await;
+            iteration += 1;
+
+            // Log every 10 iterations to show we're still polling
+            if iteration % 10 == 0 {
+                info!("🔄 Monitor active (iteration {}, last_checksum: {:?})", iteration, last_checksum.as_ref().map(|s| &s[..8]));
+            }
 
             match clipboard.get_content_checksum() {
                 Ok(Some(checksum)) => {
+                    // Log every checksum check in verbose mode
+                    if iteration % 10 == 1 {
+                        info!("Current clipboard checksum: {}", &checksum[..8]);
+                    }
+
                     if last_checksum.as_ref() != Some(&checksum) {
+                        info!("⚡ CHECKSUM CHANGED! Old: {:?}, New: {}",
+                            last_checksum.as_ref().map(|s| &s[..8]), &checksum[..8]);
+
                         last_checksum = Some(checksum.clone());
 
-                        if let Ok(Some(content)) = clipboard.get_content() {
-                            info!(
-                                "🔍 Detected LOCAL clipboard change (type: {}, checksum: {})",
-                                content.content_type_str(),
-                                &checksum[..8]
-                            );
+                        info!("🔍 Reading clipboard content...");
+                        match clipboard.get_content() {
+                            Ok(Some(content)) => {
+                                info!(
+                                    "🔍 Detected LOCAL clipboard change (type: {}, checksum: {})",
+                                    content.content_type_str(),
+                                    &checksum[..8]
+                                );
 
-                            let content_preview = match &content {
-                                ClipboardContent::Text(text) => {
-                                    if text.len() > 50 {
-                                        format!("{}...", &text[..50])
-                                    } else {
-                                        text.clone()
+                                let content_preview = match &content {
+                                    ClipboardContent::Text(text) => {
+                                        if text.len() > 50 {
+                                            format!("{}...", &text[..50])
+                                        } else {
+                                            text.clone()
+                                        }
                                     }
-                                }
-                                ClipboardContent::Image(data) => {
-                                    format!("[Image: {} bytes]", data.len())
-                                }
-                                ClipboardContent::Html(html) => {
-                                    if html.len() > 50 {
-                                        format!("{}...", &html[..50])
-                                    } else {
-                                        html.clone()
+                                    ClipboardContent::Image(data) => {
+                                        format!("[Image: {} bytes]", data.len())
                                     }
+                                    ClipboardContent::Html(html) => {
+                                        if html.len() > 50 {
+                                            format!("{}...", &html[..50])
+                                        } else {
+                                            html.clone()
+                                        }
+                                    }
+                                };
+
+                                info!("📋 Content preview: {}", content_preview);
+
+                                let message = Message::ClipboardUpdate {
+                                    content_type: content.content_type_str().to_string(),
+                                    content: content.to_base64(),
+                                    timestamp: chrono::Utc::now(),
+                                    source: Config::get_source_name(),
+                                    checksum: checksum.clone(),
+                                };
+
+                                info!("📤 Sending clipboard update to server...");
+                                if let Err(e) = client_tx.send(message).await {
+                                    error!("❌ Failed to send clipboard update: {}", e);
+                                } else {
+                                    info!("✓ Clipboard update sent to server");
                                 }
-                            };
-
-                            info!("📋 Content preview: {}", content_preview);
-
-                            let message = Message::ClipboardUpdate {
-                                content_type: content.content_type_str().to_string(),
-                                content: content.to_base64(),
-                                timestamp: chrono::Utc::now(),
-                                source: Config::get_source_name(),
-                                checksum: checksum.clone(),
-                            };
-
-                            info!("📤 Sending clipboard update to server...");
-                            if let Err(e) = client_tx.send(message).await {
-                                error!("❌ Failed to send clipboard update: {}", e);
-                            } else {
-                                info!("✓ Clipboard update sent to server");
+                            }
+                            Ok(None) => {
+                                warn!("⚠ Clipboard checksum exists but content is None");
+                            }
+                            Err(e) => {
+                                error!("❌ Failed to read clipboard content: {}", e);
                             }
                         }
                     }
                 }
                 Ok(None) => {
+                    if iteration % 10 == 1 {
+                        info!("Clipboard is empty");
+                    }
                     if last_checksum.is_some() {
-                        info!("Clipboard is now empty");
+                        info!("Clipboard cleared (was: {:?})", last_checksum.as_ref().map(|s| &s[..8]));
                         last_checksum = None;
                     }
                 }
                 Err(e) => {
-                    error!("Error checking clipboard: {}", e);
+                    error!("❌ Error checking clipboard: {}", e);
+                    error!("This might be a clipboard access issue - check permissions");
                 }
             }
         }
