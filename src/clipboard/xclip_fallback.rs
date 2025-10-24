@@ -53,7 +53,22 @@ pub fn get_text_via_xclip() -> Result<Option<String>> {
             return Ok(Some(content));
         }
 
-        warn!("All text targets failed or returned empty");
+        warn!("All xclip targets failed or returned empty");
+
+        // Try xsel as a last resort
+        debug!("Trying xsel as alternative...");
+        if let Ok(xsel_output) = Command::new("xsel")
+            .args(&["-o", "-b"])
+            .output()
+        {
+            if xsel_output.status.success() && !xsel_output.stdout.is_empty() {
+                let content = String::from_utf8(xsel_output.stdout)?;
+                debug!("xsel: found {} bytes", content.len());
+                return Ok(Some(content));
+            }
+        }
+
+        warn!("All clipboard tools (xclip, xsel) failed");
         return Ok(None);
     }
 
