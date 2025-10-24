@@ -23,15 +23,33 @@ impl ClipboardManager {
 
     /// Get the current clipboard content
     pub fn get_content(&mut self) -> Result<Option<ClipboardContent>> {
+        use tracing::{debug, warn};
+
         // Try to get image first (higher priority)
-        if let Ok(image) = self.clipboard.get_image() {
-            let png_data = Self::image_to_png(&image)?;
-            return Ok(Some(ClipboardContent::Image(png_data)));
+        match self.clipboard.get_image() {
+            Ok(image) => {
+                debug!("Found image in clipboard");
+                let png_data = Self::image_to_png(&image)?;
+                return Ok(Some(ClipboardContent::Image(png_data)));
+            }
+            Err(e) => {
+                debug!("No image in clipboard: {}", e);
+            }
         }
 
         // Try to get text
-        if let Ok(text) = self.clipboard.get_text() {
-            return Ok(Some(ClipboardContent::Text(text)));
+        match self.clipboard.get_text() {
+            Ok(text) => {
+                debug!("Found text in clipboard: {} bytes", text.len());
+                return Ok(Some(ClipboardContent::Text(text)));
+            }
+            Err(e) => {
+                warn!("Failed to get text from clipboard: {}", e);
+                warn!("This usually means:");
+                warn!("  - Clipboard is genuinely empty");
+                warn!("  - Or clipboard has unsupported format");
+                warn!("  - Or wrong clipboard selection (PRIMARY vs CLIPBOARD)");
+            }
         }
 
         // Try to get HTML (if available on platform)
@@ -40,6 +58,7 @@ impl ClipboardManager {
             // Linux-specific HTML handling would go here
         }
 
+        debug!("Clipboard appears to be empty or has unsupported content");
         Ok(None)
     }
 

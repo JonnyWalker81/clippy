@@ -7,6 +7,10 @@ edition = "2021"
 name = "clippy"
 path = "src/main.rs"
 
+[[bin]]
+name = "test_clipboard"
+path = "src/bin/test_clipboard.rs"
+
 [dependencies]
 # Async runtime
 tokio = { version = "1.41", features = ["full"] }
