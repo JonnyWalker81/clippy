@@ -1,0 +1,29 @@
+# Rust
+/target
+Cargo.lock
+**/*.rs.bk
+*.pdb
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Nix
+result
+result-*
+
+# Application data
+*.db
+*.db-shm
+*.db-wal
+
+# Logs
+*.log
