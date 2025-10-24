@@ -8,13 +8,52 @@ use tracing::{debug, warn};
 pub fn get_text_via_xclip() -> Result<Option<String>> {
     debug!("Attempting to read clipboard via xclip fallback");
 
+    // First, try to get the default STRING target
     let output = Command::new("xclip")
         .args(&["-o", "-selection", "clipboard"])
         .output()?;
 
     if !output.status.success() {
         let error = String::from_utf8_lossy(&output.stderr);
-        warn!("xclip failed: {}", error);
+        warn!("xclip failed with default target: {}", error);
+
+        // If STRING target not available, try other common text targets
+        debug!("Trying alternative targets...");
+
+        // Try UTF8_STRING
+        let output_utf8 = Command::new("xclip")
+            .args(&["-o", "-selection", "clipboard", "-t", "UTF8_STRING"])
+            .output()?;
+
+        if output_utf8.status.success() && !output_utf8.stdout.is_empty() {
+            let content = String::from_utf8(output_utf8.stdout)?;
+            debug!("xclip: found {} bytes via UTF8_STRING target", content.len());
+            return Ok(Some(content));
+        }
+
+        // Try TEXT
+        let output_text = Command::new("xclip")
+            .args(&["-o", "-selection", "clipboard", "-t", "TEXT"])
+            .output()?;
+
+        if output_text.status.success() && !output_text.stdout.is_empty() {
+            let content = String::from_utf8(output_text.stdout)?;
+            debug!("xclip: found {} bytes via TEXT target", content.len());
+            return Ok(Some(content));
+        }
+
+        // Try text/plain
+        let output_plain = Command::new("xclip")
+            .args(&["-o", "-selection", "clipboard", "-t", "text/plain"])
+            .output()?;
+
+        if output_plain.status.success() && !output_plain.stdout.is_empty() {
+            let content = String::from_utf8(output_plain.stdout)?;
+            debug!("xclip: found {} bytes via text/plain target", content.len());
+            return Ok(Some(content));
+        }
+
+        warn!("All text targets failed or returned empty");
         return Ok(None);
     }
 
@@ -63,4 +102,27 @@ pub fn get_checksum_via_xclip() -> Result<Option<String>> {
     } else {
         Ok(None)
     }
+}
+
+pub fn list_available_targets() -> Result<Vec<String>> {
+    debug!("Listing available clipboard targets");
+
+    let output = Command::new("xclip")
+        .args(&["-o", "-selection", "clipboard", "-t", "TARGETS"])
+        .output()?;
+
+    if !output.status.success() {
+        warn!("Failed to list targets: {}", String::from_utf8_lossy(&output.stderr));
+        return Ok(Vec::new());
+    }
+
+    let targets_str = String::from_utf8_lossy(&output.stdout);
+    let targets: Vec<String> = targets_str
+        .lines()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+
+    debug!("Available clipboard targets: {:?}", targets);
+    Ok(targets)
 }

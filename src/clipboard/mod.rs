@@ -53,6 +53,14 @@ impl ClipboardManager {
                 #[cfg(target_os = "linux")]
                 {
                     warn!("Trying xclip fallback...");
+
+                    // List available targets for debugging
+                    if let Ok(targets) = xclip_fallback::list_available_targets() {
+                        if !targets.is_empty() {
+                            debug!("Available clipboard targets: {:?}", targets);
+                        }
+                    }
+
                     match xclip_fallback::get_text_via_xclip() {
                         Ok(Some(text)) => {
                             warn!("✓ xclip fallback succeeded! Found {} bytes", text.len());
