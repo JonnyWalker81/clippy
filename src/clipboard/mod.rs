@@ -2,6 +2,9 @@ use anyhow::Result;
 use arboard::{Clipboard as ArboardClipboard, ImageData};
 use std::borrow::Cow;
 
+#[cfg(target_os = "linux")]
+mod xclip_fallback;
+
 #[derive(Debug, Clone)]
 pub enum ClipboardContent {
     Text(String),
@@ -40,11 +43,32 @@ impl ClipboardManager {
         // Try to get text
         match self.clipboard.get_text() {
             Ok(text) => {
-                debug!("Found text in clipboard: {} bytes", text.len());
+                debug!("Found text in clipboard via arboard: {} bytes", text.len());
                 return Ok(Some(ClipboardContent::Text(text)));
             }
             Err(e) => {
-                warn!("Failed to get text from clipboard: {}", e);
+                warn!("arboard failed to get text from clipboard: {}", e);
+
+                // Try xclip fallback on Linux
+                #[cfg(target_os = "linux")]
+                {
+                    warn!("Trying xclip fallback...");
+                    match xclip_fallback::get_text_via_xclip() {
+                        Ok(Some(text)) => {
+                            warn!("✓ xclip fallback succeeded! Found {} bytes", text.len());
+                            warn!("NOTE: arboard has compatibility issues with your clipboard manager");
+                            warn!("Using xclip fallback mode for clipboard access");
+                            return Ok(Some(ClipboardContent::Text(text)));
+                        }
+                        Ok(None) => {
+                            debug!("xclip also reports clipboard empty");
+                        }
+                        Err(xe) => {
+                            warn!("xclip fallback also failed: {}", xe);
+                        }
+                    }
+                }
+
                 warn!("This usually means:");
                 warn!("  - Clipboard is genuinely empty");
                 warn!("  - Or clipboard has unsupported format");
@@ -64,21 +88,53 @@ impl ClipboardManager {
 
     /// Set clipboard content
     pub fn set_content(&mut self, content: &ClipboardContent) -> Result<()> {
+        use tracing::warn;
+
         match content {
             ClipboardContent::Text(text) => {
-                self.clipboard.set_text(text)?;
+                match self.clipboard.set_text(text) {
+                    Ok(_) => Ok(()),
+                    Err(e) => {
+                        warn!("arboard failed to set text: {}", e);
+
+                        // Try xclip fallback on Linux
+                        #[cfg(target_os = "linux")]
+                        {
+                            warn!("Trying xclip fallback for write...");
+                            xclip_fallback::set_text_via_xclip(text)?;
+                            warn!("✓ xclip fallback write succeeded");
+                            return Ok(());
+                        }
+
+                        #[cfg(not(target_os = "linux"))]
+                        return Err(e.into());
+                    }
+                }
             }
             ClipboardContent::Image(png_data) => {
                 let image_data = Self::png_to_image_static(png_data)?;
                 self.clipboard.set_image(image_data)?;
+                Ok(())
             }
             ClipboardContent::Html(html) => {
                 // For now, fall back to text
                 // Platform-specific HTML handling can be added
-                self.clipboard.set_text(html)?;
+                match self.clipboard.set_text(html) {
+                    Ok(_) => Ok(()),
+                    Err(e) => {
+                        #[cfg(target_os = "linux")]
+                        {
+                            warn!("arboard failed, trying xclip fallback...");
+                            xclip_fallback::set_text_via_xclip(html)?;
+                            return Ok(());
+                        }
+
+                        #[cfg(not(target_os = "linux"))]
+                        return Err(e.into());
+                    }
+                }
             }
         }
-        Ok(())
     }
 
     /// Get a checksum of the current clipboard content

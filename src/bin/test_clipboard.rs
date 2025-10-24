@@ -71,6 +71,34 @@ fn main() {
     }
     println!();
 
+    // Try to get current clipboard with xclip
+    println!("=== Testing with xclip directly ===");
+    use std::process::Command;
+
+    match Command::new("xclip")
+        .args(&["-o", "-selection", "clipboard"])
+        .output()
+    {
+        Ok(output) => {
+            if output.status.success() {
+                let content = String::from_utf8_lossy(&output.stdout);
+                if !content.is_empty() {
+                    println!("✓ xclip can read clipboard: {}", content.trim());
+                    println!("\nBUT arboard cannot read it!");
+                    println!("This suggests a format mismatch or arboard/clipboard manager incompatibility.");
+                } else {
+                    println!("✗ xclip also sees empty clipboard");
+                }
+            } else {
+                println!("✗ xclip failed: {}", String::from_utf8_lossy(&output.stderr));
+            }
+        }
+        Err(e) => {
+            println!("✗ Could not run xclip: {}", e);
+        }
+    }
+    println!();
+
     // Instructions
     println!("=== Manual Test ===");
     println!("1. Copy some text (Ctrl+C or using your application)");
@@ -79,4 +107,7 @@ fn main() {
     println!("\nOr test with xclip:");
     println!("  echo 'hello world' | xclip -selection clipboard");
     println!("  xclip -o -selection clipboard");
+    println!("\nIf xclip works but arboard doesn't:");
+    println!("  This is a known issue with some clipboard managers");
+    println!("  Try: pkill -f 'clipboard' && echo 'test' | xclip -sel c");
 }
