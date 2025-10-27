@@ -11,17 +11,16 @@ VERBOSE="${NATIVE_SYNC_VERBOSE:-1}"
 LOG_FILE="${NATIVE_SYNC_LOG:-/tmp/native-sync-macos.log}"
 
 # State file to track last clipboard
-STATE_DIR="/tmp/native-sync-$$"
+STATE_DIR="/tmp/native-sync-server"
 mkdir -p "$STATE_DIR"
 LAST_HASH_FILE="$STATE_DIR/last_hash"
 CLIPBOARD_CACHE="$STATE_DIR/clipboard_cache"
-CLIENT_PIPE="$STATE_DIR/client_pipe"
 
 # Cleanup on exit
 cleanup() {
     log "🛑 Shutting down native sync..."
-    rm -rf "$STATE_DIR"
     pkill -P $$ || true
+    rm -rf "$STATE_DIR"
     exit 0
 }
 trap cleanup EXIT INT TERM
@@ -58,96 +57,90 @@ get_clipboard_hash() {
     echo -n "$content" | md5 -q
 }
 
-# Send clipboard to clients
-send_to_clients() {
-    local content="$1"
-    local encoded=$(echo -n "$content" | base64)
-    local hash=$(get_clipboard_hash "$content")
-    local preview="${content:0:50}"
-    [ ${#content} -gt 50 ] && preview="${preview}..."
+# Handle client connection
+handle_client() {
+    log "🔗 Client connected from $SOCAT_PEERADDR:$SOCAT_PEERPORT"
 
-    log "📤 Sending to clients: '$preview' (${#content} bytes, hash: ${hash:0:8})"
-    echo "CLIP:$encoded" >> "$CLIENT_PIPE"
-}
+    # Send current clipboard immediately if available
+    if [ -f "$CLIPBOARD_CACHE" ]; then
+        local content=$(cat "$CLIPBOARD_CACHE")
+        if [ -n "$content" ]; then
+            local encoded=$(echo -n "$content" | base64)
+            echo "CLIP:$encoded"
+            log "📤 Sent initial clipboard to client"
+        fi
+    fi
 
-# Monitor local clipboard changes
-monitor_clipboard() {
-    log "👀 Starting clipboard monitor (polling every ${POLL_INTERVAL}s)"
-    local last_hash=""
+    # Handle incoming messages and send periodic clipboard updates
+    local last_sent_hash=""
+    if [ -f "$LAST_HASH_FILE" ]; then
+        last_sent_hash=$(cat "$LAST_HASH_FILE")
+    fi
 
     while true; do
-        local content=$(get_clipboard)
+        # Check for incoming data (non-blocking)
+        if read -r -t 0.1 line 2>/dev/null; then
+            if [[ "$line" =~ ^CLIP:(.+)$ ]]; then
+                local encoded="${BASH_REMATCH[1]}"
+                local content=$(echo "$encoded" | base64 -D 2>/dev/null || echo "")
 
-        if [ -n "$content" ]; then
-            local current_hash=$(get_clipboard_hash "$content")
+                if [ -n "$content" ]; then
+                    local hash=$(get_clipboard_hash "$content")
+                    local preview="${content:0:50}"
+                    [ ${#content} -gt 50 ] && preview="${preview}..."
 
-            if [ "$current_hash" != "$last_hash" ]; then
-                local preview="${content:0:50}"
-                [ ${#content} -gt 50 ] && preview="${preview}..."
-                log "🔍 Local clipboard changed: '$preview' (${#content} bytes, hash: ${current_hash:0:8})"
+                    log "📥 Received from client: '$preview' (${#content} bytes, hash: ${hash:0:8})"
 
-                # Update state
-                echo "$current_hash" > "$LAST_HASH_FILE"
-                echo "$content" > "$CLIPBOARD_CACHE"
-                last_hash="$current_hash"
+                    # Apply to local clipboard
+                    if set_clipboard "$content"; then
+                        echo "$hash" > "$LAST_HASH_FILE"
+                        echo "$content" > "$CLIPBOARD_CACHE"
+                        last_sent_hash="$hash"
+                        log "✅ Applied to local clipboard"
+                        echo "ACK:$hash"
+                    else
+                        log "❌ Failed to apply to clipboard"
+                        echo "NAK"
+                    fi
+                fi
+            elif [[ "$line" == "PING" ]]; then
+                echo "PONG"
+            fi
+        fi
 
-                # Send to clients if pipe exists
-                if [ -p "$CLIENT_PIPE" ]; then
-                    send_to_clients "$content"
+        # Check if local clipboard changed and send to client
+        if [ -f "$CLIPBOARD_CACHE" ]; then
+            local content=$(get_clipboard)
+            if [ -n "$content" ]; then
+                local current_hash=$(get_clipboard_hash "$content")
+
+                if [ "$current_hash" != "$last_sent_hash" ]; then
+                    local preview="${content:0:50}"
+                    [ ${#content} -gt 50 ] && preview="${preview}..."
+                    log "🔍 Local clipboard changed: '$preview' (${#content} bytes, hash: ${current_hash:0:8})"
+
+                    # Update state
+                    echo "$current_hash" > "$LAST_HASH_FILE"
+                    echo "$content" > "$CLIPBOARD_CACHE"
+                    last_sent_hash="$current_hash"
+
+                    # Send to client
+                    local encoded=$(echo -n "$content" | base64)
+                    echo "CLIP:$encoded"
+                    log "📤 Sent to client"
                 fi
             fi
         fi
 
         sleep "$POLL_INTERVAL"
     done
+
+    log "👋 Client disconnected"
 }
 
-# Handle client connection
-handle_client() {
-    local client_id="$1"
-    log "🔗 Client $client_id connected"
-
-    # Send current clipboard immediately
-    if [ -f "$CLIPBOARD_CACHE" ]; then
-        local content=$(cat "$CLIPBOARD_CACHE")
-        if [ -n "$content" ]; then
-            local encoded=$(echo -n "$content" | base64)
-            echo "CLIP:$encoded"
-            log "📤 Sent initial clipboard to client $client_id"
-        fi
-    fi
-
-    # Handle incoming messages
-    while IFS= read -r line; do
-        if [[ "$line" =~ ^CLIP:(.+)$ ]]; then
-            local encoded="${BASH_REMATCH[1]}"
-            local content=$(echo "$encoded" | base64 -D 2>/dev/null || echo "")
-
-            if [ -n "$content" ]; then
-                local hash=$(get_clipboard_hash "$content")
-                local preview="${content:0:50}"
-                [ ${#content} -gt 50 ] && preview="${preview}..."
-
-                log "📥 Received from client $client_id: '$preview' (${#content} bytes, hash: ${hash:0:8})"
-
-                # Apply to local clipboard
-                if set_clipboard "$content"; then
-                    echo "$hash" > "$LAST_HASH_FILE"
-                    echo "$content" > "$CLIPBOARD_CACHE"
-                    log "✅ Applied to local clipboard"
-                    echo "ACK:$hash"
-                else
-                    log "❌ Failed to apply to clipboard"
-                    echo "NAK"
-                fi
-            fi
-        elif [[ "$line" == "PING" ]]; then
-            echo "PONG"
-        fi
-    done
-
-    log "👋 Client $client_id disconnected"
-}
+# Export function for socat
+export -f handle_client log get_clipboard set_clipboard get_clipboard_hash
+export VERBOSE LOG_FILE STATE_DIR LAST_HASH_FILE CLIPBOARD_CACHE POLL_INTERVAL
 
 # Main server loop
 start_server() {
@@ -162,34 +155,23 @@ start_server() {
     fi
 
     if ! command -v socat &> /dev/null; then
-        log "⚠️  Warning: socat not found, trying nc fallback..."
-        log "   Install socat for better performance: brew install socat"
+        log "❌ Error: socat not found"
+        log "   Install with: brew install socat"
+        exit 1
     fi
 
-    # Create named pipe for broadcasting to clients
-    mkfifo "$CLIENT_PIPE" 2>/dev/null || true
-
-    # Start clipboard monitor in background
-    monitor_clipboard &
-    local monitor_pid=$!
-
-    # Start server
-    if command -v socat &> /dev/null; then
-        log "✓ Using socat for TCP server"
-        # Use socat for bidirectional communication
-        local client_counter=0
-        while true; do
-            client_counter=$((client_counter + 1))
-            socat TCP-LISTEN:$PORT,reuseaddr,fork SYSTEM:"$(declare -f handle_client); handle_client $client_counter" &
-            wait $!
-        done
-    else
-        log "✓ Using nc for TCP server (fallback)"
-        # Fallback to nc (less reliable)
-        while true; do
-            nc -l "$PORT" | handle_client "nc-client"
-        done
+    # Initialize clipboard cache
+    local current_clip=$(get_clipboard)
+    if [ -n "$current_clip" ]; then
+        echo "$current_clip" > "$CLIPBOARD_CACHE"
+        get_clipboard_hash "$current_clip" > "$LAST_HASH_FILE"
     fi
+
+    # Start server using socat
+    log "✓ Starting socat TCP server"
+    socat -d -d \
+        TCP-LISTEN:$PORT,reuseaddr,fork \
+        EXEC:"/bin/bash -c handle_client",pty,stderr
 }
 
 # Health check mode
