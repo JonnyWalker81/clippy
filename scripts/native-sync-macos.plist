@@ -1,0 +1,78 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Service Label -->
+    <key>Label</key>
+    <string>com.clippy.native-sync</string>
+
+    <!-- Program to run -->
+    <key>ProgramArguments</key>
+    <array>
+        <!-- CHANGE THIS to the actual path where you cloned the repo -->
+        <string>/Users/YOUR_USERNAME/path/to/clippy/scripts/native-sync-macos.sh</string>
+        <string>start</string>
+    </array>
+
+    <!-- Environment variables -->
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>NATIVE_SYNC_PORT</key>
+        <string>9877</string>
+        <key>NATIVE_SYNC_INTERVAL</key>
+        <string>0.2</string>
+        <key>NATIVE_SYNC_VERBOSE</key>
+        <string>1</string>
+        <key>NATIVE_SYNC_LOG</key>
+        <string>/tmp/native-sync-macos.log</string>
+        <!-- Add PATH to ensure tools are found -->
+        <key>PATH</key>
+        <string>/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+
+    <!-- Run at load (system startup / user login) -->
+    <key>RunAtLoad</key>
+    <true/>
+
+    <!-- Keep the service running (restart if it crashes) -->
+    <key>KeepAlive</key>
+    <dict>
+        <!-- Always keep alive -->
+        <key>SuccessfulExit</key>
+        <false/>
+        <!-- But don't restart if it crashes more than 3 times in 10 seconds -->
+        <key>Crashed</key>
+        <true/>
+    </dict>
+
+    <!-- Throttle restarts -->
+    <key>ThrottleInterval</key>
+    <integer>5</integer>
+
+    <!-- Standard output log -->
+    <key>StandardOutPath</key>
+    <string>/tmp/native-sync-macos-stdout.log</string>
+
+    <!-- Standard error log -->
+    <key>StandardErrorPath</key>
+    <string>/tmp/native-sync-macos-stderr.log</string>
+
+    <!-- Working directory -->
+    <key>WorkingDirectory</key>
+    <string>/Users/YOUR_USERNAME/path/to/clippy</string>
+
+    <!-- Process type (background daemon) -->
+    <key>ProcessType</key>
+    <string>Background</string>
+
+    <!-- Nice level (lower priority, don't hog CPU) -->
+    <key>Nice</key>
+    <integer>5</integer>
+
+    <!-- Run only when user is logged in -->
+    <key>LimitLoadToSessionType</key>
+    <array>
+        <string>Aqua</string>
+    </array>
+</dict>
+</plist>

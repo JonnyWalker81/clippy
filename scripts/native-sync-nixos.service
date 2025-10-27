@@ -1,0 +1,52 @@
+[Unit]
+Description=Native Clipboard Sync Client for NixOS
+Documentation=file:///path/to/clippy/NATIVE_SYNC.md
+After=graphical-session.target network-online.target
+Wants=network-online.target
+# Ensure display server is ready
+Requires=graphical-session.target
+
+[Service]
+Type=simple
+# CHANGE THIS to the actual path where you cloned the repo
+ExecStart=/home/YOUR_USERNAME/path/to/clippy/scripts/native-sync-nixos.sh start
+
+# Environment variables
+Environment="NATIVE_SYNC_HOST=10.211.55.2"
+Environment="NATIVE_SYNC_PORT=9877"
+Environment="NATIVE_SYNC_INTERVAL=0.2"
+Environment="NATIVE_SYNC_VERBOSE=1"
+Environment="NATIVE_SYNC_LOG=/tmp/native-sync-nixos.log"
+# Preserve DISPLAY for clipboard access
+Environment="DISPLAY=:0"
+
+# Restart policy
+Restart=on-failure
+RestartSec=5s
+# Stop trying after 5 failed starts
+StartLimitBurst=5
+StartLimitIntervalSec=60
+
+# Process management
+KillMode=mixed
+KillSignal=SIGTERM
+TimeoutStopSec=10
+
+# Resource limits (be gentle on system)
+Nice=5
+CPUQuota=10%
+MemoryMax=100M
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=native-sync
+
+# Security hardening (optional, can be commented out if causing issues)
+# PrivateTmp=true
+# NoNewPrivileges=true
+# ProtectSystem=strict
+# ProtectHome=read-only
+
+[Install]
+WantedBy=graphical-session.target
