@@ -131,13 +131,24 @@ connect_to_server() {
         get_clipboard_hash "$current_clip" > "$LAST_HASH_FILE"
     fi
 
+    # Export functions for socat subprocess
+    export -f handle_server_communication log get_clipboard set_clipboard get_clipboard_hash detect_clipboard_tool
+    export VERBOSE LOG_FILE STATE_DIR LAST_HASH_FILE CLIPBOARD_CACHE POLL_INTERVAL
+    export CLIPBOARD_TOOL CLIPBOARD_READ_CMD CLIPBOARD_WRITE_CMD
+    export DISPLAY WAYLAND_DISPLAY
+
     # Connect with retry loop
     while true; do
-        if socat -d -d - TCP:$SERVER_HOST:$SERVER_PORT,retry=5,interval=5 | handle_server_communication; then
-            log "✅ Connection closed normally"
-        else
-            log "⚠️  Connection lost, reconnecting in 5 seconds..."
-        fi
+        log "📞 Establishing connection..."
+
+        # Use socat with EXEC to run handle_server_communication
+        # This creates proper bidirectional stdin/stdout connection
+        socat -d -d \
+            TCP:$SERVER_HOST:$SERVER_PORT,retry=5,interval=5 \
+            EXEC:"/bin/bash -c handle_server_communication",pty,stderr \
+            2>&1
+
+        log "⚠️  Connection lost, reconnecting in 5 seconds..."
         sleep 5
     done
 }
@@ -146,13 +157,15 @@ connect_to_server() {
 handle_server_communication() {
     log "✅ Connected to server"
 
-    # Track last synced hash to avoid loops
-    local last_received_hash=""
-    local last_sent_hash=""
+    # Track last synced hash to avoid loops (use files for inter-process communication)
+    local last_sent_file="$STATE_DIR/last_sent"
+    local last_received_file="$STATE_DIR/last_received"
 
+    # Initialize from cache if available
     if [ -f "$LAST_HASH_FILE" ]; then
-        last_sent_hash=$(cat "$LAST_HASH_FILE")
-        last_received_hash="$last_sent_hash"
+        local initial_hash=$(cat "$LAST_HASH_FILE")
+        echo "$initial_hash" > "$last_sent_file"
+        echo "$initial_hash" > "$last_received_file"
     fi
 
     # Start background process to monitor local clipboard and send changes
@@ -163,20 +176,25 @@ handle_server_communication() {
             if [ -n "$content" ]; then
                 local current_hash=$(get_clipboard_hash "$content")
 
+                # Read last sent hash from file
+                local last_sent=""
+                if [ -f "$last_sent_file" ]; then
+                    last_sent=$(cat "$last_sent_file")
+                fi
+
                 # Only send if different from last sent
-                if [ "$current_hash" != "$last_sent_hash" ]; then
+                if [ "$current_hash" != "$last_sent" ]; then
                     local preview="${content:0:50}"
                     [ ${#content} -gt 50 ] && preview="${preview}..."
                     log "🔍 Local clipboard changed: '$preview' (${#content} bytes, hash: ${current_hash:0:8})"
 
-                    # Encode and send
+                    # Encode and send to stdout (which goes to socat → server)
                     local encoded=$(echo -n "$content" | base64 -w 0)
                     echo "CLIP:$encoded"
-                    log "📤 Sent to server"
+                    log "📤 Sent to server (stdout)"
 
-                    # Update sent hash
-                    echo "$current_hash" > "$STATE_DIR/last_sent"
-                    last_sent_hash="$current_hash"
+                    # Update sent hash in file
+                    echo "$current_hash" > "$last_sent_file"
                 fi
             fi
 
@@ -185,7 +203,7 @@ handle_server_communication() {
     ) &
     local monitor_pid=$!
 
-    # Read messages from server
+    # Read messages from server (stdin from socat)
     while IFS= read -r line; do
         if [[ "$line" =~ ^CLIP:(.+)$ ]]; then
             local encoded="${BASH_REMATCH[1]}"
@@ -198,13 +216,24 @@ handle_server_communication() {
 
                 log "📥 Received from server: '$preview' (${#content} bytes, hash: ${hash:0:8})"
 
+                # Read current hash files
+                local last_sent=""
+                local last_received=""
+                if [ -f "$last_sent_file" ]; then
+                    last_sent=$(cat "$last_sent_file")
+                fi
+                if [ -f "$last_received_file" ]; then
+                    last_received=$(cat "$last_received_file")
+                fi
+
                 # Check if this is different from what we last sent or received
-                if [ "$hash" != "$last_received_hash" ] && [ "$hash" != "$last_sent_hash" ]; then
+                if [ "$hash" != "$last_received" ] && [ "$hash" != "$last_sent" ]; then
                     # Apply to local clipboard
                     if set_clipboard "$content"; then
                         echo "$hash" > "$LAST_HASH_FILE"
                         echo "$content" > "$CLIPBOARD_CACHE"
-                        last_received_hash="$hash"
+                        echo "$hash" > "$last_received_file"
+                        echo "$hash" > "$last_sent_file"  # Also update sent to prevent echo
                         log "✅ Applied to local clipboard"
                     else
                         log "❌ Failed to apply to clipboard"
