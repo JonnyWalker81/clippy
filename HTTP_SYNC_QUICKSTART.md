@@ -6,8 +6,13 @@ This guide will help you set up the new HTTP-based clipboard synchronization sys
 
 The new system uses an HTTP server architecture:
 - **Rust HTTP Server** (runs on macOS): REST API for clipboard storage with history
-- **macOS Client** (bash script): Monitors local clipboard and syncs via HTTP
-- **NixOS Client** (bash script): Monitors local clipboard and syncs via HTTP
+- **Clients** (choose one option):
+  - **Option 1: Bash Scripts** (lightweight, no compilation needed)
+    - macOS Client: Uses pbcopy/pbpaste
+    - NixOS Client: Uses xclip/xsel/wl-clipboard
+  - **Option 2: Rust CLI** (unified, cross-platform)
+    - Single binary works on both macOS and NixOS
+    - Uses native clipboard APIs via `arboard` library
 
 ### Advantages
 - ✅ Standard HTTP protocol (easy to debug with curl, browsers)
@@ -40,18 +45,32 @@ cargo run --bin clipboard_server &
 # Server will start on http://0.0.0.0:8080
 ```
 
-### 3. Start macOS Client
+### 3. Start Clients
+
+#### Option A: Bash Scripts (Recommended for Quick Start)
 
 ```bash
-# In a new terminal on macOS
+# macOS Client
 ./scripts/native-sync-macos.sh start
+
+# NixOS Client (in VM)
+./scripts/native-sync-nixos.sh start
 ```
 
-### 4. Start NixOS Client (in VM)
+#### Option B: Rust CLI (Unified Cross-Platform Client)
 
 ```bash
-# In the NixOS VM
-./scripts/native-sync-nixos.sh start
+# Build the Rust CLI (one-time, both platforms)
+cargo build --bin clippy --release
+
+# On macOS
+./target/release/clippy sync -s http://localhost:8080 -i 200
+
+# On NixOS (in VM)
+./target/release/clippy sync -s http://10.211.55.2:8080 -i 200
+
+# Or use defaults from config (server and interval)
+./target/release/clippy sync
 ```
 
 ### 5. Test the Sync

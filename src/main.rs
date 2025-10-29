@@ -2,6 +2,7 @@ mod client;
 mod clipboard;
 mod config;
 mod daemon;
+mod http_sync;
 mod server;
 mod storage;
 mod sync;
@@ -36,6 +37,17 @@ enum Commands {
         /// Run as client only
         #[arg(long)]
         client: bool,
+    },
+
+    /// Start HTTP sync client (connects to HTTP server)
+    Sync {
+        /// Server URL (default: http://localhost:8080)
+        #[arg(short, long)]
+        server: Option<String>,
+
+        /// Poll interval in milliseconds (default: 200)
+        #[arg(short, long)]
+        interval: Option<u64>,
     },
 
     /// Show clipboard history
@@ -117,6 +129,19 @@ async fn main() -> Result<()> {
 
             let daemon = ClipboardDaemon::new(config, mode);
             daemon.run().await?;
+        }
+
+        Commands::Sync { server, interval } => {
+            let config = Config::load()?;
+
+            let server_url = server.unwrap_or_else(|| {
+                format!("http://{}:{}", config.client.server_host, config.client.server_port)
+            });
+
+            let poll_interval = interval.unwrap_or(200);
+
+            let mut sync_client = http_sync::HttpSyncClient::new(server_url, poll_interval);
+            sync_client.run().await?;
         }
 
         Commands::History {
