@@ -205,8 +205,8 @@ poll_server() {
             local hash=$(json_value "hash" "$response")
             local encoded_content=$(json_value "content" "$response")
 
-            # Remove potential quotes from content
-            encoded_content=$(echo "$encoded_content" | tr -d '"')
+            # Remove potential quotes and newlines from content
+            encoded_content=$(echo "$encoded_content" | tr -d '"\n')
 
             if [ -n "$id" ] && [ "$id" -gt "$last_received_id" ]; then
                 # Read last sent hash to prevent echo

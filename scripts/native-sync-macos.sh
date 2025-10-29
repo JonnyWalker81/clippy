@@ -71,7 +71,8 @@ json_value() {
 # Send clipboard to server
 send_to_server() {
     local content="$1"
-    local encoded=$(echo -n "$content" | base64)
+    # macOS base64 wraps at 76 chars by default - remove newlines for JSON
+    local encoded=$(echo -n "$content" | base64 | tr -d '\n')
 
     local response=$(curl -s -X POST "$SERVER_URL/api/clipboard" \
         -H "Content-Type: application/json" \
@@ -150,8 +151,8 @@ poll_server() {
             local hash=$(json_value "hash" "$response")
             local encoded_content=$(json_value "content" "$response")
 
-            # Remove potential quotes from content
-            encoded_content=$(echo "$encoded_content" | tr -d '"')
+            # Remove potential quotes and newlines from content
+            encoded_content=$(echo "$encoded_content" | tr -d '"\n')
 
             if [ -n "$id" ] && [ "$id" -gt "$last_received_id" ]; then
                 # Read last sent hash to prevent echo
