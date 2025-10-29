@@ -117,7 +117,10 @@ get_clipboard_hash() {
 json_value() {
     local key="$1"
     local json="$2"
-    echo "$json" | grep -o "\"$key\"[[:space:]]*:[[:space:]]*[^,}]*" | sed 's/.*:[[:space:]]*//' | tr -d '"'
+    # More robust: match the value between quotes or as a number
+    # Handles: "key":"value" or "key":123
+    echo "$json" | grep -o "\"$key\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" | sed 's/.*:[[:space:]]*"//' | sed 's/"$//' || \
+    echo "$json" | grep -o "\"$key\"[[:space:]]*:[[:space:]]*[0-9][0-9]*" | sed 's/.*:[[:space:]]*//'
 }
 
 # Send clipboard to server
@@ -212,28 +215,32 @@ poll_server() {
                     last_sent_hash=$(cat "$LAST_SENT_HASH_FILE")
                 fi
 
-                # Only apply if different from what we sent
-                if [ "$hash" != "$last_sent_hash" ]; then
-                    local content=$(echo "$encoded_content" | base64 -d 2>/dev/null || echo "")
+                # Decode content first to compute proper hash
+                local content=$(echo "$encoded_content" | base64 -d 2>/dev/null || echo "")
 
-                    if [ -n "$content" ]; then
+                if [ -n "$content" ]; then
+                    # Compute hash of decoded content (not server's base64 hash)
+                    local content_hash=$(get_clipboard_hash "$content")
+
+                    # Only apply if different from what we sent
+                    if [ "$content_hash" != "$last_sent_hash" ]; then
                         local preview="${content:0:50}"
                         [ ${#content} -gt 50 ] && preview="${preview}..."
-                        log "📥 Received from server: id=$id, '$preview' (${#content} bytes, hash: ${hash:0:8})"
+                        log "📥 Received from server: id=$id, '$preview' (${#content} bytes, hash: ${content_hash:0:8})"
 
                         if set_clipboard "$content"; then
                             echo "$content" > "$CLIPBOARD_CACHE"
                             echo "$id" > "$LAST_RECEIVED_ID_FILE"
-                            echo "$hash" > "$LAST_SENT_HASH_FILE"  # Update sent hash to prevent echo
+                            echo "$content_hash" > "$LAST_SENT_HASH_FILE"  # Store hash of decoded content
                             last_received_id=$id
-                            last_sent_hash="$hash"
+                            last_sent_hash="$content_hash"
                             log "✅ Applied to local clipboard"
                         else
                             log "❌ Failed to apply to clipboard"
                         fi
+                    else
+                        log "⏭️  Skipping (hash matches what we sent: ${content_hash:0:8})"
                     fi
-                else
-                    log "⏭️  Skipping (hash matches what we sent: ${hash:0:8})"
                 fi
             fi
         fi
