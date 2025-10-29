@@ -1,20 +1,20 @@
 #!/usr/bin/env bash
-# Native clipboard sync for NixOS/Linux (Client Mode)
-# Bidirectional clipboard sync using xclip/xsel/wl-clipboard and TCP sockets
+# Native clipboard sync for NixOS/Linux (HTTP Client Mode)
+# Bidirectional clipboard sync using xclip/xsel/wl-clipboard and HTTP API
 
 set -euo pipefail
 
 # Configuration
-SERVER_HOST="${NATIVE_SYNC_HOST:-10.211.55.2}"
-SERVER_PORT="${NATIVE_SYNC_PORT:-9877}"
-POLL_INTERVAL="${NATIVE_SYNC_INTERVAL:-0.2}"  # 200ms
-VERBOSE="${NATIVE_SYNC_VERBOSE:-1}"
-LOG_FILE="${NATIVE_SYNC_LOG:-/tmp/native-sync-nixos.log}"
+SERVER_URL="${CLIPBOARD_SERVER_URL:-http://10.211.55.2:8080}"
+POLL_INTERVAL="${CLIPBOARD_POLL_INTERVAL:-0.2}"  # 200ms
+VERBOSE="${CLIPBOARD_VERBOSE:-1}"
+LOG_FILE="${CLIPBOARD_LOG:-/tmp/native-sync-nixos.log}"
 
 # State file to track last clipboard
-STATE_DIR="/tmp/native-sync-client"
+STATE_DIR="/tmp/native-sync-nixos"
 mkdir -p "$STATE_DIR"
-LAST_HASH_FILE="$STATE_DIR/last_hash"
+LAST_SENT_HASH_FILE="$STATE_DIR/last_sent_hash"
+LAST_RECEIVED_ID_FILE="$STATE_DIR/last_received_id"
 CLIPBOARD_CACHE="$STATE_DIR/clipboard_cache"
 
 # Clipboard tool selection
@@ -113,153 +113,186 @@ get_clipboard_hash() {
     echo -n "$content" | md5sum | cut -d' ' -f1
 }
 
-# Connect to server and handle communication
-connect_to_server() {
-    log "🔗 Connecting to server at $SERVER_HOST:$SERVER_PORT"
+# Parse JSON value (simple extraction without jq dependency)
+json_value() {
+    local key="$1"
+    local json="$2"
+    echo "$json" | grep -o "\"$key\"[[:space:]]*:[[:space:]]*[^,}]*" | sed 's/.*:[[:space:]]*//' | tr -d '"'
+}
 
-    # Check if socat is available
-    if ! command -v socat &> /dev/null; then
-        log "❌ Error: socat is required"
-        log "   Install with: nix-shell -p socat"
+# Send clipboard to server
+send_to_server() {
+    local content="$1"
+    local encoded=$(echo -n "$content" | base64 -w 0)
+
+    local response=$(curl -s -X POST "$SERVER_URL/api/clipboard" \
+        -H "Content-Type: application/json" \
+        -d "{\"content\":\"$encoded\"}" 2>/dev/null)
+
+    if [ $? -eq 0 ]; then
+        local id=$(json_value "id" "$response")
+        local hash=$(json_value "hash" "$response")
+        log "📤 Sent to server: id=$id, hash=${hash:0:8}"
+        return 0
+    else
+        log "❌ Failed to send to server"
+        return 1
+    fi
+}
+
+# Get latest clipboard from server
+get_from_server() {
+    local response=$(curl -s "$SERVER_URL/api/clipboard/latest" 2>/dev/null)
+
+    if [ $? -eq 0 ] && [ -n "$response" ]; then
+        echo "$response"
+        return 0
+    else
+        return 1
+    fi
+}
+
+# Monitor local clipboard and send changes to server
+monitor_local_clipboard() {
+    log "🔍 Starting local clipboard monitor"
+
+    # Initialize last sent hash
+    local last_sent_hash=""
+    if [ -f "$LAST_SENT_HASH_FILE" ]; then
+        last_sent_hash=$(cat "$LAST_SENT_HASH_FILE")
+    fi
+
+    while true; do
+        local content=$(get_clipboard)
+
+        if [ -n "$content" ]; then
+            local current_hash=$(get_clipboard_hash "$content")
+
+            if [ "$current_hash" != "$last_sent_hash" ]; then
+                local preview="${content:0:50}"
+                [ ${#content} -gt 50 ] && preview="${preview}..."
+                log "🔍 Local clipboard changed: '$preview' (${#content} bytes, hash: ${current_hash:0:8})"
+
+                if send_to_server "$content"; then
+                    echo "$current_hash" > "$LAST_SENT_HASH_FILE"
+                    last_sent_hash="$current_hash"
+                fi
+            fi
+        fi
+
+        sleep "$POLL_INTERVAL"
+    done
+}
+
+# Poll server for clipboard changes
+poll_server() {
+    log "📥 Starting server poll loop"
+
+    # Initialize last received ID
+    local last_received_id=0
+    if [ -f "$LAST_RECEIVED_ID_FILE" ]; then
+        last_received_id=$(cat "$LAST_RECEIVED_ID_FILE")
+    fi
+
+    while true; do
+        local response=$(get_from_server)
+
+        if [ $? -eq 0 ] && [ -n "$response" ]; then
+            local id=$(json_value "id" "$response")
+            local hash=$(json_value "hash" "$response")
+            local encoded_content=$(json_value "content" "$response")
+
+            # Remove potential quotes from content
+            encoded_content=$(echo "$encoded_content" | tr -d '"')
+
+            if [ -n "$id" ] && [ "$id" -gt "$last_received_id" ]; then
+                # Read last sent hash to prevent echo
+                local last_sent_hash=""
+                if [ -f "$LAST_SENT_HASH_FILE" ]; then
+                    last_sent_hash=$(cat "$LAST_SENT_HASH_FILE")
+                fi
+
+                # Only apply if different from what we sent
+                if [ "$hash" != "$last_sent_hash" ]; then
+                    local content=$(echo "$encoded_content" | base64 -d 2>/dev/null || echo "")
+
+                    if [ -n "$content" ]; then
+                        local preview="${content:0:50}"
+                        [ ${#content} -gt 50 ] && preview="${preview}..."
+                        log "📥 Received from server: id=$id, '$preview' (${#content} bytes, hash: ${hash:0:8})"
+
+                        if set_clipboard "$content"; then
+                            echo "$content" > "$CLIPBOARD_CACHE"
+                            echo "$id" > "$LAST_RECEIVED_ID_FILE"
+                            echo "$hash" > "$LAST_SENT_HASH_FILE"  # Update sent hash to prevent echo
+                            last_received_id=$id
+                            last_sent_hash="$hash"
+                            log "✅ Applied to local clipboard"
+                        else
+                            log "❌ Failed to apply to clipboard"
+                        fi
+                    fi
+                else
+                    log "⏭️  Skipping (hash matches what we sent: ${hash:0:8})"
+                fi
+            fi
+        fi
+
+        sleep "$POLL_INTERVAL"
+    done
+}
+
+# Start sync service
+start_sync() {
+    log "🚀 Starting native clipboard sync (HTTP client)"
+    log "📍 Server URL: $SERVER_URL"
+    log "📂 State directory: $STATE_DIR"
+    log "📄 Log file: $LOG_FILE"
+
+    # Detect clipboard tool
+    if ! detect_clipboard_tool; then
         exit 1
+    fi
+
+    # Check for curl
+    if ! command -v curl &> /dev/null; then
+        log "❌ Error: curl not found"
+        log "   Install with: nix-shell -p curl"
+        exit 1
+    fi
+
+    # Test server connectivity
+    log "🔗 Testing server connectivity..."
+    if ! curl -s -f "$SERVER_URL/health" > /dev/null 2>&1; then
+        log "⚠️  Warning: Cannot reach server at $SERVER_URL"
+        log "   Make sure clipboard_server is running on the host"
+    else
+        log "✅ Server is reachable"
     fi
 
     # Initialize clipboard cache
     local current_clip=$(get_clipboard)
     if [ -n "$current_clip" ]; then
         echo "$current_clip" > "$CLIPBOARD_CACHE"
-        get_clipboard_hash "$current_clip" > "$LAST_HASH_FILE"
+        get_clipboard_hash "$current_clip" > "$LAST_SENT_HASH_FILE"
     fi
 
-    # Export functions for socat subprocess
-    export -f handle_server_communication log get_clipboard set_clipboard get_clipboard_hash detect_clipboard_tool
-    export VERBOSE LOG_FILE STATE_DIR LAST_HASH_FILE CLIPBOARD_CACHE POLL_INTERVAL
-    export CLIPBOARD_TOOL CLIPBOARD_READ_CMD CLIPBOARD_WRITE_CMD
-    export DISPLAY WAYLAND_DISPLAY
-
-    # Connect with retry loop
-    while true; do
-        log "📞 Establishing connection..."
-
-        # Use socat with EXEC to run handle_server_communication
-        # This creates proper bidirectional stdin/stdout connection
-        socat -d -d \
-            TCP:$SERVER_HOST:$SERVER_PORT,retry=5,interval=5 \
-            EXEC:"/bin/bash -c handle_server_communication",pty,stderr \
-            2>&1
-
-        log "⚠️  Connection lost, reconnecting in 5 seconds..."
-        sleep 5
-    done
-}
-
-# Handle bidirectional communication with server
-handle_server_communication() {
-    log "✅ Connected to server"
-
-    # Track last synced hash to avoid loops (use files for inter-process communication)
-    local last_sent_file="$STATE_DIR/last_sent"
-    local last_received_file="$STATE_DIR/last_received"
-
-    # Initialize from cache if available
-    if [ -f "$LAST_HASH_FILE" ]; then
-        local initial_hash=$(cat "$LAST_HASH_FILE")
-        echo "$initial_hash" > "$last_sent_file"
-        echo "$initial_hash" > "$last_received_file"
-    fi
-
-    # Start background process to monitor local clipboard and send changes
-    (
-        while true; do
-            local content=$(get_clipboard)
-
-            if [ -n "$content" ]; then
-                local current_hash=$(get_clipboard_hash "$content")
-
-                # Read last sent hash from file
-                local last_sent=""
-                if [ -f "$last_sent_file" ]; then
-                    last_sent=$(cat "$last_sent_file")
-                fi
-
-                # Only send if different from last sent
-                if [ "$current_hash" != "$last_sent" ]; then
-                    local preview="${content:0:50}"
-                    [ ${#content} -gt 50 ] && preview="${preview}..."
-                    log "🔍 Local clipboard changed: '$preview' (${#content} bytes, hash: ${current_hash:0:8})"
-
-                    # Encode and send to stdout (which goes to socat → server)
-                    local encoded=$(echo -n "$content" | base64 -w 0)
-                    echo "CLIP:$encoded"
-                    log "📤 Sent to server (stdout)"
-
-                    # Update sent hash in file
-                    echo "$current_hash" > "$last_sent_file"
-                fi
-            fi
-
-            sleep "$POLL_INTERVAL"
-        done
-    ) &
+    # Start background processes
+    monitor_local_clipboard &
     local monitor_pid=$!
 
-    # Read messages from server (stdin from socat)
-    while IFS= read -r line; do
-        if [[ "$line" =~ ^CLIP:(.+)$ ]]; then
-            local encoded="${BASH_REMATCH[1]}"
-            local content=$(echo "$encoded" | base64 -d 2>/dev/null || echo "")
+    poll_server &
+    local poll_pid=$!
 
-            if [ -n "$content" ]; then
-                local hash=$(get_clipboard_hash "$content")
-                local preview="${content:0:50}"
-                [ ${#content} -gt 50 ] && preview="${preview}..."
+    log "✓ Background processes started (monitor: $monitor_pid, poll: $poll_pid)"
 
-                log "📥 Received from server: '$preview' (${#content} bytes, hash: ${hash:0:8})"
-
-                # Read current hash files
-                local last_sent=""
-                local last_received=""
-                if [ -f "$last_sent_file" ]; then
-                    last_sent=$(cat "$last_sent_file")
-                fi
-                if [ -f "$last_received_file" ]; then
-                    last_received=$(cat "$last_received_file")
-                fi
-
-                # Check if this is different from what we last sent or received
-                if [ "$hash" != "$last_received" ] && [ "$hash" != "$last_sent" ]; then
-                    # Apply to local clipboard
-                    if set_clipboard "$content"; then
-                        echo "$hash" > "$LAST_HASH_FILE"
-                        echo "$content" > "$CLIPBOARD_CACHE"
-                        echo "$hash" > "$last_received_file"
-                        echo "$hash" > "$last_sent_file"  # Also update sent to prevent echo
-                        log "✅ Applied to local clipboard"
-                    else
-                        log "❌ Failed to apply to clipboard"
-                    fi
-                else
-                    log "⏭️  Skipping (already synced, hash: ${hash:0:8})"
-                fi
-            fi
-        elif [[ "$line" =~ ^ACK:(.+)$ ]]; then
-            local hash="${BASH_REMATCH[1]}"
-            log "✅ Server acknowledged: ${hash:0:8}"
-        elif [[ "$line" == "NAK" ]]; then
-            log "❌ Server rejected clipboard update"
-        elif [[ "$line" == "PONG" ]]; then
-            log "💓 Server alive"
-        fi
-    done
-
-    # Cleanup
-    kill $monitor_pid 2>/dev/null || true
-    log "👋 Disconnected from server"
+    # Wait for both processes
+    wait
 }
 
 # Health check mode
 health_check() {
-    echo "=== Native Sync Health Check (NixOS) ==="
+    echo "=== Native Sync Health Check (NixOS HTTP Client) ==="
     echo
 
     # Check if process is running
@@ -284,14 +317,25 @@ health_check() {
     fi
 
     # Check server connectivity
-    if command -v nc &> /dev/null; then
-        if timeout 2 nc -z "$SERVER_HOST" "$SERVER_PORT" 2>/dev/null; then
-            echo "✓ Server reachable at $SERVER_HOST:$SERVER_PORT"
+    if command -v curl &> /dev/null; then
+        echo "✓ curl available"
+
+        if curl -s -f "$SERVER_URL/health" > /dev/null 2>&1; then
+            echo "✓ Server reachable at $SERVER_URL"
+
+            # Get server health info
+            local health=$(curl -s "$SERVER_URL/health" 2>/dev/null)
+            if [ -n "$health" ]; then
+                local items=$(json_value "items_count" "$health")
+                local uptime=$(json_value "uptime_seconds" "$health")
+                echo "  Server items: $items"
+                echo "  Server uptime: ${uptime}s"
+            fi
         else
-            echo "✗ Cannot reach server at $SERVER_HOST:$SERVER_PORT"
+            echo "✗ Cannot reach server at $SERVER_URL"
         fi
     else
-        echo "⚠️  Cannot test connectivity (nc not found)"
+        echo "✗ curl not available"
     fi
 
     # Check log file
@@ -311,51 +355,26 @@ health_check() {
     echo "  XDG_SESSION_TYPE: ${XDG_SESSION_TYPE:-<not set>}"
 }
 
-# Ping server
-ping_server() {
-    log "🏓 Pinging server at $SERVER_HOST:$SERVER_PORT"
-
-    if command -v nc &> /dev/null; then
-        if echo "PING" | nc -w 2 "$SERVER_HOST" "$SERVER_PORT" | grep -q "PONG"; then
-            log "✅ Server responded with PONG"
-            return 0
-        else
-            log "❌ No PONG received from server"
-            return 1
-        fi
-    else
-        log "❌ nc not available for ping"
-        return 1
-    fi
-}
-
 # Parse arguments
 case "${1:-start}" in
     start)
-        if ! detect_clipboard_tool; then
-            exit 1
-        fi
-        connect_to_server
+        start_sync
         ;;
     check|status|health)
         health_check
-        ;;
-    ping)
-        ping_server
         ;;
     stop)
         log "🛑 Stopping native sync..."
         pkill -f "native-sync-nixos.sh" || echo "No process found"
         ;;
     *)
-        echo "Usage: $0 {start|stop|check|health|status|ping}"
+        echo "Usage: $0 {start|stop|check|health|status}"
         echo
         echo "Environment variables:"
-        echo "  NATIVE_SYNC_HOST       - Server hostname/IP (default: 10.211.55.2)"
-        echo "  NATIVE_SYNC_PORT       - Server port (default: 9877)"
-        echo "  NATIVE_SYNC_INTERVAL   - Poll interval in seconds (default: 0.2)"
-        echo "  NATIVE_SYNC_VERBOSE    - Enable verbose output (default: 1)"
-        echo "  NATIVE_SYNC_LOG        - Log file path (default: /tmp/native-sync-nixos.log)"
+        echo "  CLIPBOARD_SERVER_URL    - Server URL (default: http://10.211.55.2:8080)"
+        echo "  CLIPBOARD_POLL_INTERVAL - Poll interval in seconds (default: 0.2)"
+        echo "  CLIPBOARD_VERBOSE       - Enable verbose output (default: 1)"
+        echo "  CLIPBOARD_LOG           - Log file path (default: /tmp/native-sync-nixos.log)"
         exit 1
         ;;
 esac
