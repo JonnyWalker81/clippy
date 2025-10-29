@@ -184,9 +184,8 @@ poll_server() {
                         else
                             log "❌ Failed to apply to clipboard"
                         fi
-                    else
-                        log "⏭️  Skipping (hash matches what we sent: ${content_hash:0:8})"
                     fi
+                    # Silently skip if hash matches (no log spam)
                 fi
             fi
         fi
