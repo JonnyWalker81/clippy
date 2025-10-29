@@ -84,11 +84,22 @@ get_clipboard() {
     # Try multiple targets for xclip (handle compatibility issues)
     if [ "$CLIPBOARD_TOOL" = "xclip" ]; then
         local content=""
-        for target in STRING UTF8_STRING TEXT text/plain; do
+        # Try UTF8_STRING first (most reliable for modern terminals like Ghostty)
+        for target in UTF8_STRING STRING TEXT text/plain; do
             content=$(xclip -o -selection clipboard -t "$target" 2>/dev/null || echo "")
-            if [ -n "$content" ]; then
+
+            # Validate content: reject suspicious single-character results
+            # These are often error indicators or partial reads
+            if [ -n "$content" ] && [ ${#content} -gt 1 ]; then
                 echo "$content"
                 return 0
+            elif [ -n "$content" ] && [ ${#content} -eq 1 ]; then
+                # Single character - only accept if it's alphanumeric
+                if [[ "$content" =~ ^[a-zA-Z0-9]$ ]]; then
+                    echo "$content"
+                    return 0
+                fi
+                # Otherwise, try next target
             fi
         done
         return 1
